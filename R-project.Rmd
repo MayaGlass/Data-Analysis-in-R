@@ -1,0 +1,632 @@
+---
+title: "R Project"
+output: html_document
+---
+
+
+```{r, echo = FALSE, results = 'hide', warning=FALSE, message=FALSE}
+
+library(maps)
+
+library(tidyverse)
+
+library(rvest)  # for html
+
+library(geonames)
+
+library(uniformly) # for sampling uniformly from the sphere 
+
+library(GGally)  # for ggpairs
+
+library(lubridate)  # for parsing time 
+
+library(e1071) # skewness and kurtosis
+
+library(rworldmap)
+
+
+options(scipen=999)
+
+```
+
+
+
+# Part 1 - Simulate random points on earth    
+
+These are helper functions that convert coordinates between spherical and cartesian:
+
+
+```{r, warning=FALSE, message=FALSE}
+
+
+# Convert to Cartesian coordinates: the function assumes that theta is in [0,pi] and phi is in [0,2pi]
+
+spherical_to_cartesian <- function(point)
+
+{
+
+  x <- point$r*cos(point$phi)*sin(point$theta)
+
+  y <- point$r*sin(point$phi)*sin(point$theta)
+
+  z <- point$r*cos(point$theta)
+
+  
+
+  return(list(x=x,y=y,z=z))
+
+}
+
+
+
+# Convert to Spherical coordinates: the function assumes that theta is in [0,pi] and phi is in [0,2pi]
+
+cartesian_to_spherical <- function(point) 
+
+{
+
+  r <- sqrt(point$x**2+point$y**2+point$z**2)
+
+  phi <- atan(point$y/point$x) + pi * ( 1 - sign(point$y)*(1+sign(point$x))/2 )  # take care of all sign cases. When x=0 or y=0 exactly, the function may not work correctly, but these are events of measure zero for any continuous distribution over the sphere.
+
+  theta <- acos(point$z/r)
+
+  return(list(r=r,phi=phi,theta=theta))
+
+}
+
+
+
+# Geodesic distance between points. 
+
+# Input format: p1 and p2 are lists having items: r, phi, theta in spherical coordinates, 
+
+# i.e. phi in [0,2pi] and theta in [0,pi]
+
+geodesic_dist <- function(p1, p2)
+
+{
+
+  return ( p1$r * acos( cos(p1$theta)*cos(p2$theta) + sin(p1$theta)*sin(p2$theta) * cos(p1$phi-p2$phi) ) )
+
+}
+
+```
+
+
+### Calculating the average **Geodesic Distance** on the face of the earth:
+
+First, I will sample 1000 pairs of points, and calculate the distance between them, using *replicate*. In order to keep the code tidy, I created a helper function called *sample_point* that samples a point using *runif_on_sphere* function, and then renames the items as x,y,z in order to fit the helper function demands, which calculates the geodesic distance.
+
+
+```{r}
+
+sample_point <- function(){ # This function samples from earth and then names the coordinates of the Cartesian sample into "x", "y", "z", so it will fit the helper function demands.
+  s_point <- list(runif_on_sphere(n=1,d=3,r=6371))
+  return(list(x = s_point[[1]][1], y = s_point[[1]][2], z = s_point[[1]][3]))
+}
+
+B <- 1000 # set the number of repetitions
+
+geodesic_distances <- replicate(B,geodesic_dist(cartesian_to_spherical(point=sample_point()),cartesian_to_spherical(point=sample_point()))) # create a sample sized 1000 of geodesic distances
+
+```
+
+The average Geodesic Distance is
+```{r}
+mean(geodesic_distances)
+```
+It's nice to see that the mean geodesic distance is approximately equal to a quarter of an entire circulation or the planet:
+
+```{r}
+2*pi*6371/4
+```
+
+
+### Calculating the average **Euclidean Distance**:
+
+
+```{r}
+
+euclidean_dist <- function(p1,p2){
+  return(((p1$x-p2$x)^2+(p1$y-p2$y)^2+(p1$z-p2$z)^2)^0.5)
+}
+
+
+B <- 1000
+
+euclidean_distances <- replicate(B,euclidean_dist(sample_point(),sample_point())) 
+
+```
+
+The average Euclidean Distance is
+```{r}
+mean(euclidean_distances)
+```
+
+```{r}
+
+B <- 1000
+
+geodesic_distances <- replicate(B,geodesic_dist(cartesian_to_spherical(point=sample_point()),cartesian_to_spherical(point=sample_point())))
+
+hist(geodesic_distances,xlab = "Geodesic Distances",main = "Geodesic Distances Distirbutions", breaks = 30)
+skewness(geodesic_distances)
+kurtosis(geodesic_distances)
+
+euclidean_distances <- replicate(B,euclidean_dist(sample_point(),sample_point())) # create a sample sized 1000 of geodesic distances
+
+hist(euclidean_distances,xlab = "Euclidean",main = "Euclidean Distances Distirbutions", breaks = 30)
+skewness(euclidean_distances)
+kurtosis(euclidean_distances)
+
+
+```
+
+The Geodesic Distance distribution Is more similar to the normal distribution - Its empirical distribution's plot shows that the majority of the samples are centered along some expected value, with tails on both sides, in similar with the normal distribution. In contrast, the Euclidian Distance distribution has a more significant left tail.
+
+---
+
+### generating random points from a specific country using rejection sampling:
+
+First I'll create a helper function that converts from spherical to geographical coordinates. I use this function in order to convert the coordinates to ones I can find them on the map.
+
+```{r}
+
+spherical_to_geographical <- function(point){
+  lat <- point$theta*180/pi-90
+  long <- point$phi*180/pi-180
+  return(list(long=long, lat = lat))
+}
+
+
+```
+
+Next is a function that receives the number of samples, and the country's name, and returns an array of points in that country. This function works in a way of rejection sampling. It samples a point. If it is in the desired country, then the point is returned. Otherwise, while the point is not in the country, it keeps sampling again and again.
+
+This was my original function, which worked, but took very long time to sample 1000 points from the USA with. So finally, I used another function which will be explained further down. I leave this function for possible future use in the document.
+
+```{r}
+sample_from_country<- function(n,country){ # sample n points from the country
+  random_points <- replicate(n,sample_point_from_country(country))
+  return(random_points)
+}
+
+sample_point_from_country <- function(country){
+  point <- cartesian_to_spherical(sample_point()) # sample a first point and turn it to geographic
+
+  while (strsplit(map.where("world", spherical_to_geographical(point)), "[:]")[[1]][1] != country | is.na(map.where("world", spherical_to_geographical(point)))){ # while the point is not in the designated country, keep sampling
+    point <- cartesian_to_spherical(sample_point())
+  }
+  return(point) # return the point once it is in the country, in spheric coordinates
+}
+
+```
+
+
+Due to the long running time of my previous functions, I created an additional function, that does exactly the same, but instead of sampling 1 sample each time, it samples 2000, and this way the chances of getting the country are higher.
+
+While the number of samples from the desired country is smaller than n, it keeps sampling in the same way another 1000, each time r-binding all the previous samples with the new samples, until n samples from the country are achieved.
+
+I chose these numbers after testing the running times of several numbers, and found that for sampling 1 point from a country, they work quite fast.
+
+**cartesians_to_geos** - This function converts multiple catresian points into their geographic pattern
+**sample_n_from_country** - receives a number n and a country, and returns n samples of that country.
+
+
+```{r}
+
+
+cartesians_to_geos <- function(points){ # points is a DF of X,Y,Z. This function converts multiple catresian points into their geographic pattern.
+  r <- sqrt(points$x**2+points$y**2+points$z**2)
+  theta <- acos(points$z/r)
+  phi <- atan(points$y/points$x) + pi * ( 1 - sign(points$y)*(1+sign(points$x))/2 )
+  lat <- theta*180/pi-90
+  long <- phi*180/pi-180
+  return(data.frame(r=r,phi=phi,theta=theta,lat=lat,long=long))
+}
+
+
+
+sample_n_from_country<- function(n,country){
+  s_point <- runif_on_sphere(n=2000,d=3,r=6371) # sample 2000 samples from all over the world
+  points <- list(x = s_point[,1], y = s_point[,2], z = s_point[,3])
+  points<-data.frame(points)
+  
+  points_geos <- cartesians_to_geos(points) # convert the points into geographic points
+  locations <- str_split_fixed(map.where("world",points_geos$long,points_geos$lat), "[:]",2)[,1] # match the points to their locations, and remove anything after ":".
+  
+  country_points<-cbind(points_geos,data.frame(locations))%>% filter(locations==country)  %>% drop_na() # filter only the points that are in the country, and drop NA.
+  
+  
+  while (length(country_points$locations)<n){ #if the number of samples from the desired country is still not n, continue sampling, and rbind the result with the new samples, until we get n samples total.
+    
+    s_point <- runif_on_sphere(n=1000,d=3,r=6371)
+    points <- list(x = s_point[,1], y = s_point[,2], z = s_point[,3])
+    points<-data.frame(points)
+    points_geos <- cartesians_to_geos(points) # convert the points into geographic points
+    
+    locations <- str_split_fixed(map.where("world",points_geos$long,points_geos$lat), "[:]",2)[,1] # match the points to their locations, and remove anything after ":".
+    
+    additional_country_points<-cbind(points_geos,data.frame(locations))%>% filter(locations==country)  %>% drop_na() # filter only the points that are in the country, and drop NA.
+    
+    country_points<-rbind(country_points,additional_country_points)
+  
+  }
+  
+  country_points <- country_points[1:n,] # take only the first n results
+  return(country_points)
+}
+
+
+
+
+```
+
+
+Now, I will use the above function in order to sample 2000 samples from the USA
+
+```{r}
+
+n<- 1000
+geodesic_dists_in_USA <- c(rep(0,n))
+points_in_USA_x <- sample_n_from_country(n,"USA")
+points_in_USA_y <- sample_n_from_country(n,"USA") 
+for (i in 1:n){
+  geodesic_dists_in_USA[i] <- geodesic_dist(points_in_USA_x[i,],points_in_USA_y[i,]) # take one sample from each array of n points, and add the distance between them to geodesic_dists_in_USA.
+}
+
+```
+
+
+The mean of the distances between 2 points in the USA is:
+```{r}
+mean(geodesic_dists_in_USA)
+```
+
+The rejection sampling method would be problematic for very small countries, that the probability to sample a point from is very small - like the Vatican. However, we can improve it if we either narrow the area from which the samples can be taken from to the country / nearest areas of the country (if we don't have the exact place of the country), or if we learn from our "mistakes" - for each wrong sample, we remove the nearest areas from the possible areas from which the function can sample.
+
+---
+
+
+
+# part 2 - Analysis of geographical data   
+
+For this analysis, I use the rvest library.
+
+### extracting and manipulating the data:
+
+first, I read the html, and extracted the desired table from it, using its xpath (which I extracted with the "inspect" tool). Next, I turned it into a data frame. I filtered out and country that had parenthesis in its name using *str_detect* and an appropriate regular expression. In addition, in order to turn the area colum into numeric, I had to take only the first number in it. To do so, I used a delimiter I detected (a space) and the function *str_split_fixed* to seperate the two numbers. I replaced the original column with the column that contains only the first number. Finally, I replaced all the commas with blanks, and turned the characters into numbers.
+
+
+```{r}
+url <- "https://en.wikipedia.org/wiki/List_of_countries_and_dependencies_by_area"
+webpage <- read_html(url)
+df <- webpage %>% html_element(xpath = "/html/body/div[3]/div[3]/div[5]/div[1]/table[2]") %>% html_table() # extract the table from the URL
+colnames(df) <- c('rank','country_dependency','total_in_km2', 'land_in_km2', 'water_in_km2', 'percentage_water', 'notes') # change col names for comfort
+
+df <- df %>% filter(!str_detect(country_dependency, "\\("))# Remove Countries that contain "()"
+
+df$total_in_km2 <- str_split_fixed(df$total_in_km2, " ", 2)[,1] # Convert the column representing total area to numerical values in square km
+df$total_in_km2 <- as.numeric(gsub(",","",df$total_in_km2)) # tun to numerical
+df %>% head(2)
+df %>% tail(2)
+
+```
+
+
+Now I will do the same for the *List_of_countries_and_dependencies_by_population*
+
+```{r}
+url2 <- "https://en.wikipedia.org/wiki/List_of_countries_and_dependencies_by_population"
+webpage2 <- read_html(url2)
+df_p <- webpage2 %>% html_element(xpath = "/html/body/div[3]/div[3]/div[5]/div[1]/table") %>% html_table() # extract the table from the URL
+colnames(df_p) <- c('rank','country_dependency','region', 'population', 'percentage_of_the_world', 'date', 'source', 'notes') # change col names for comfort
+# df_p <- df_p %>% filter(!str_detect(country_dependency, "\\("))# Remove Countries that contain "()"
+df_p$population <- str_split_fixed(df_p$population, " ", 2)[,1] # Convert the column representing total area to numerical values in square km
+df_p$population <- as.numeric(gsub(",","",df_p$population)) # tun to numerical
+df_p %>% head(2)
+df_p %>% tail(2)
+
+```
+
+### merging the two data-frames into one:
+
+First, before the merge, I want to handle some of the countries  which I spotted that differ between the two data frames. To start with, I will check to see any other differences that might occur using *setdiff*:
+
+```{r}
+setdiff(df$country_dependency, df_p$country_dependency) # countries in df but not in df_p
+setdiff(df_p$country_dependency, df$country_dependency) # countries in df_p but not in df
+
+```
+
+I see that between the 2 DFs there are same countries with different names. I will change the names so they fit on both.
+
+```{r}
+df$country_dependency<-replace(df$country_dependency, df$country_dependency=="Canada[Note 3]", "Canada")
+df_p$country_dependency<-replace(df_p$country_dependency, df_p$country_dependency=="Congo", "Republic of the Congo")
+df_p$country_dependency<-replace(df_p$country_dependency, df_p$country_dependency=="DR Congo", "Democratic Republic of the Congo")
+df$country_dependency<-replace(df$country_dependency, df$country_dependency=="The Bahamas", "Bahamas")
+df$country_dependency<-replace(df$country_dependency, df$country_dependency=="State of Palestine", "Palestine")
+
+
+
+```
+
+
+Now, I will merge the 2 dataframes, excluding the countries that don't match between the 2 dataframes, in order to not lose information. Then I will add the pop.density column.  In addition I will remove the "world" from the dataframe so it shows only countries:
+
+
+```{r}
+
+wikipedia <- merge.data.frame(df, df_p, by = 'country_dependency', all = FALSE)
+world_population <- wikipedia$population[wikipedia$country_dependency == "World"]
+wikipedia <- wikipedia[wikipedia$country_dependency != "World",] # Remove world from the df
+
+wikipedia$pop.density <- round(wikipedia$population/wikipedia$total_in_km2,3)
+wiki_arranged_density <- data.frame(country = wikipedia$country_dependency,density = wikipedia$pop.density) # live only the country and the density columns
+
+```
+
+Top 3 least dense contries:
+```{r}
+wiki_arranged_density %>% drop_na() %>% arrange(density) %>% head(3) # arrange by density and show least dense countries
+
+```
+
+
+Next, I will show the data on the world map
+
+```{r}
+map <- joinCountryData2Map(wikipedia, joinCode = "NAME", nameJoinColumn = "country_dependency")
+par(mai=c(0,0,0.2,0),xaxs="i",yaxs="i")
+mapCountryData(map, nameColumnToPlot="pop.density")
+
+
+```
+
+
+### Calculating the average distance between every 2 people on the planet
+
+Next, I use the simulation to estimate the average geodesic distance, and see how does it compares to the average geodesic distance between two random points on earth.
+
+```{r, warning=FALSE, message=FALSE}
+
+names.wiki <- c("United States", "Kingdom of Denmark", "Republic of the Congo", "Sahrawi Arab Democratic Republic", "United Kingdom", "Somaliland", "Eswatini", "The Bahamas", "The Gambia", "Abkhazia", "United States Minor Outlying Islands", "State of Palestine", "Transnistria", "South Ossetia",  "Northern Cyprus",  "Artsakh", "East Timor", "Trinidad and Tobago")
+
+names.map <- c("USA", "Denmark", "Republic of Congo", "Western Sahara", "UK", "Somalia", "Swaziland", "Bahamas", "Gambia", "Georgia", "USA", "Palestine", "Moldova", "Georgia", "Cyprus",  "Armenia", "Timor-Leste", "Trinidad")
+
+```
+
+First I will extract all the countries names from wikipedia, and replace some of them with names that will fit the *names.map*. I use *setdiff* to check for differences between countries in my list, and countries in the *maps* package, and see that all countries are okay.
+
+One of the parameters of the function I will create is the probability to sample a person from each country, according to population size. I will first calculate this vector of probabilities by calculating the size of the population of the country, divided by the population of the world, which I kept earlier before removing.
+
+
+```{r}
+
+# countries <- wikipedia %>% filter(total_in_km2 > 1000) # Ignore countries smaller than 1000 km^2
+# wikipedia %>% filter(total_in_km2 > 1000)
+countries <- wikipedia
+countries$population_ratio <- countries$population/sum(countries$population, na.rm = TRUE)
+sum(countries$population_ratio, na.rm = TRUE)
+
+
+countries <- data.frame(countries = countries$country_dependency,population_ratio = countries$population_ratio) # Extract the countries
+
+for (i in 1:length(names.map)){
+    countries$countries[countries$countries==names.wiki[i]]<-names.map[i];
+}
+
+countries <- countries %>% group_by(countries) %>% summarize(population_ratio=sum(population_ratio)) %>% drop_na() # leave only unique values
+
+setdiff(countries$countries, unique(map_data("world")$region)) # countries in my list, but not in the maps' package.
+
+
+```
+
+Next, I will use a function I created that samples 2 countries from a list, and finds a point within each, using the previously implemented *sample_n_from_country* from Q1.
+Using *replicate* I will run this function n times, and calculate the mean of the results.
+
+*dist_between_2_people* gets a vector of countries, and a matching vector of probabilities. it samples 2 "people" in the world and finds their countries by actually sampling a country, with a probability to sample the country being the population size divided by the worlds population.
+
+This simulates picking a person randomly from the world, and then finding out its country.
+
+```{r}
+
+proba <- countries$population_ratio
+countries<- countries$countries
+
+
+dist_between_2_people <- function(countries,proba){
+  c1 <- sample(countries,1,replace=TRUE,proba)
+  c2 <- sample(countries,1,replace=TRUE,proba)
+  p_1<- sample_n_from_country(1,c1)
+  p_2<- sample_n_from_country(1,c2)
+  return(geodesic_dist(p_1,p_2))
+  
+}
+
+dists_between_people <- replicate(100,dist_between_2_people(countries,proba=proba))
+mean(dists_between_people)
+
+```
+
+The mean of the distances between sampled people is smaller than that of countries. This can be explained mainly by the distribution of the people across countries - It is not uniform, and the probability to sample people from some countries is bigger than others, as the probability is a function of the population size. For example, it is much more likely to sample 2 people from the USA than a person from a USA and a person from Israel. This means that many of the distances could be between people of the same country - and the distances will shorten accordingly.
+in addition, since we are sampeling people, the points at sea are no longer available for sampeling, which narrows down to a smaller part of the world.
+
+---
+
+# Part 3 - Estimation of countries' sizes.
+
+I created several helper function, and then used *appk* and *sapply* to run them over the samples:
+
+**match_country** - The function recieves a vector of long and lat of a single uniformly sampled point on earth, and matches the country the location is in. I use this function in the main function with *apply*  in order to match each of the n samples to a country.
+
+**freq_of_country** - Returns the estimated size of a single country. It does so by summing the number of time the country appears in the sampled data, and then divides it by the number of sample, times the size of the earth's surface. I use this function with sapply for each of the countries on the list.
+
+
+```{r}
+
+match_country <- function(point){ # The function recieves a vector of long and lat of a single uniformly sampled point on earth. It matches the country.
+  return(map.where("world", list(long=point[1], lat = point[2])))
+}
+
+freq_of_country<- function(country, samples_locations, foe){ # returns the frequency of country, out of the n samples
+  return(sum(samples_locations==country, na.rm = TRUE)/length(samples_locations)*foe)
+}
+
+```
+
+The main function, that uses the helper functions in order to calculate the size of each country on the list:
+
+```{r}
+size_of_countries <- function(countries,n){
+  samples <- replicate(n, sample_uniformly()) # n geographic coordinates
+  samples_locations <- apply(samples, MARGIN =2, match_country) # create an array sized n with  the country matching each location
+  samples_locations <- str_split_fixed(samples_locations, ":",2)[,1] # Some of the countries returned by the *maps.where* function contain "country:location". So I used *str_split_fixed* in order to remove the smaller location, and only leave the country.
+  
+  r <- 6371
+  foe <- 4*pi*r^2 # Face of earth
+  estimated_size <- sapply(countries, freq_of_country, samples_locations = samples_locations, foe = foe)
+  estimated_size <- as.data.frame(estimated_size)
+  return(estimated_size)
+}
+
+```
+
+I will now use the main function in order to calculate the size of the list of countries extracted from Wikipedia:
+
+```{r}
+
+sample_uniformly<- function(){
+  return(spherical_to_geographical(cartesian_to_spherical(sample_point())))
+}
+
+countries_size <- wikipedia$country_dependency
+for (i in 1:length(names.map)){
+    countries_size[countries_size==names.wiki[i]]<-names.map[i];
+}
+
+countries_size<-unique(countries_size) # leave only unique values
+
+countries_by_size <- size_of_countries(countries_size,10000)
+```
+
+
+
+#### Top 10 large countries according to my analysis:
+```{r}
+countries_by_size <- countries_by_size %>% arrange(desc(estimated_size))
+head(countries_by_size,10)
+
+```
+
+
+
+The two lists have a very high match, both in the top 10 countries, and the sizes are also similar, althogh not accurate.
+
+
+
+
+# Part 4 -  Analysis and visualization of earthquake geographical data
+
+```{r}
+
+df <- read.csv("C:\\Users\\Maya\\Desktop\\School\\Github\\R project\\earthquakes.csv")
+
+```
+
+Five latest earthquakes:
+
+```{r}
+df %>% arrange(desc(time)) %>% head(5)
+
+```
+
+
+Five strongest earthquakes:
+
+```{r}
+df %>% arrange(desc(mag)) %>% head(5)
+
+```
+
+```{r}
+mapWorld <- borders("world", colour="gray50", fill="white") # create a layer of borders
+
+ggplot(df, aes()) + mapWorld + geom_point(aes(x=longitude, y=latitude) ,color="red", size=1) + ggtitle("Earthquakes in 2022 on the world's map") 
+```
+
+```{r}
+
+
+ggplot(df%>%filter(mag>2&mag<i+3), aes()) + mapWorld + geom_point(aes(x=longitude, y=latitude) ,color="red", size=1) + ggtitle("Earthquakes 2-3") 
+
+ggplot(df%>%filter(mag>3&mag<4), aes()) + mapWorld + geom_point(aes(x=longitude, y=latitude) ,color="red", size=1) + ggtitle("Earthquakes 3-4") 
+
+ggplot(df%>%filter(mag>4&mag<5), aes()) + mapWorld + geom_point(aes(x=longitude, y=latitude) ,color="red", size=1) + ggtitle("Earthquakes 4-5") 
+
+ggplot(df%>%filter(mag>5&mag<6), aes()) + mapWorld + geom_point(aes(x=longitude, y=latitude) ,color="red", size=1) + ggtitle("Earthquakes 5-6") 
+
+ggplot(df%>%filter(mag>6&mag<7), aes()) + mapWorld + geom_point(aes(x=longitude, y=latitude) ,color="red", size=2) + ggtitle("Earthquakes 6-7") 
+
+ggplot(df%>%filter(mag>7&mag<8), aes()) + mapWorld + geom_point(aes(x=longitude, y=latitude) ,color="red", size=2) + ggtitle("Earthquakes 7-8") 
+
+```
+
+very light earthquakes happen all the time, around the world. 
+Earthquakes leveled 3-4 happen mostly in north America.
+Earthquakes 5-6 are once again, quite spread.
+Earthquakes 6-7 are very rear and don't happen often. They occured especially in the east,and in south America.
+Earthquakes with magnitude 7-8 happened only twice this year.
+
+
+using *Sapply* and a custom function *calc_days* which calcolates the days from the beggining of the year, I created a new column called "day-of-year".
+Next, I used *as.POSIXct* to extract the Hours, minutes and seconds, and put them together into hours since midnight.
+
+
+```{r}
+
+
+calc_days <-function(e_date){length(seq(from = as.Date("2022-01-01"),to = e_date,by = 'day'))}
+
+
+df$date <- as.Date(df$time)
+df$day_of_year <- sapply(df$date,calc_days)
+df$time_of_day <- round(as.numeric(format(as.POSIXct(as_datetime(df$time)), format = "%H"))+as.numeric(format(as.POSIXct(as_datetime(df$time)), format = "%M"))/60 + as.numeric(format(as.POSIXct(as_datetime(df$time)), format = "%S"))/3600,3)
+
+```
+
+
+Now for the plot, using ggpairs:
+```{r}
+ggpairs(df,columns = c(4,5,24,25))
+
+```
+As we can see, for neither of the pairs there isn't a significant correlation.
+
+
+Here I calculate the test statistic s:
+
+```{r}
+
+e_i <- length(df$time)/24
+s=0
+for (i in 1:24){
+  s_i <- (sum(df$time_of_day>=i-1 & df$time_of_day<i)-e_i)^2/e_i
+  s = s + s_i
+}
+
+round(s,3)
+
+```
+
+P-val:
+
+```{r}
+p_val <- 1-pchisq(s,23)
+round(p_val,3)
+
+```
+Because the p-value is smaller than alpha of 0.01, we will reject the hypothesis that the distribution of earthquakes over the time of the day is uniform.
