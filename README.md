@@ -6,7 +6,7 @@ The following project is written in R and consists of an RMD file, and an HTML f
 * I calculated the mean geodesic and euclidean distance on the face of the earth, using a simulation of 1000 pairs of points. Then I compared the disttribution of both distances.
 * I created a function that generates n random points from a specific country using rejection sampling. It samples a point. If it is in the desired country, then the point is returned. Otherwise, while the point is not in the country, it keeps sampling again and again. Than I used that function to sample 2000 points from the USA, and calculate the mean geodesic distance in the country.
 
-### part 2 - analyzation of the world's population and countries, from data extracted from tables from different Wikipedia pages
+### part 2 - annalysis of the world's population and countries, from data extracted from tables from different Wikipedia pages
 * First, I extracted and manipulated the data from the HTML pages, using the rvest library, and regex. Additional information about the manipulations performed can be found in the comments within the code.. 
 * I merged the two dataframes by the country-name. In order to do so, I annalyzed diffrences and similarities between the two tables.
 * I used the merged info in order to calculate the density for each country, and presented the top 3 least dense countries in the world. In addition, I created a world map, colored by density.
